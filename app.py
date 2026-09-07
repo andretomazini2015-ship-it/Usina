@@ -18,19 +18,26 @@ try:
     key: str = st.secrets["SUPABASE_KEY"]
     supabase: Client = create_client(url, key)
 except:
-    st.error("Erro de conexão com Supabase.")
+    st.error("Erro de conexão com Supabase. Verifique os Secrets.")
     st.stop()
 
-# Cloudinary (opcional)
 try:
-    cloudinary.config(cloud_name=st.secrets["CLOUDINARY_NAME"], api_key=st.secrets["CLOUDINARY_KEY"], api_secret=st.secrets["CLOUDINARY_SECRET"], secure=True)
+    cloudinary.config(
+        cloud_name=st.secrets["CLOUDINARY_NAME"], 
+        api_key=st.secrets["CLOUDINARY_KEY"], 
+        api_secret=st.secrets["CLOUDINARY_SECRET"], 
+        secure=True
+    )
 except: pass
 
 # ==========================================
 # 2. FUNÇÕES DE APOIO
 # ==========================================
-def gerar_hash_senha(senha): return hashlib.sha256(str.encode(senha)).hexdigest()
-def verificar_senha(senha, hash_armazenado): return gerar_hash_senha(senha) == hash_armazenado
+def gerar_hash_senha(senha): 
+    return hashlib.sha256(str.encode(senha)).hexdigest()
+
+def verificar_senha(senha, hash_armazenado): 
+    return gerar_hash_senha(senha) == hash_armazenado
 
 def gerar_pdf_ticket(dados):
     pdf = FPDF()
@@ -63,9 +70,10 @@ def atualizar_estoque_direto(material, peso, op="soma"):
         supabase.table("estoque_insumos").update({"quantidade_kg": nova}).eq("item", material).execute()
 
 # ==========================================
-# 3. ACESSO
+# 3. CONTROLE DE ACESSO
 # ==========================================
-if "autenticado" not in st.session_state: st.session_state.update({"autenticado": False, "usuario": "", "perfil": ""})
+if "autenticado" not in st.session_state: 
+    st.session_state.update({"autenticado": False, "usuario": "", "perfil": ""})
 
 if not st.session_state["autenticado"]:
     st.title("🏛️ Sistema Usina Municipal")
@@ -93,6 +101,7 @@ with tabs[0]:
         df = pd.DataFrame(res.data)
         m = st.columns(len(df))
         for i, r in df.iterrows(): m[i].metric(r['item'], f"{r['quantidade_kg']:,.0f} kg")
+        st.bar_chart(df.set_index("item")["quantidade_kg"])
 
 # --- TAB 2: BALANÇA ---
 with tabs[1]:
@@ -108,12 +117,19 @@ with tabs[1]:
     with c2:
         foto = st.camera_input("Foto")
         if st.button("💾 Salvar Pesagem"):
-            dados = {"placa": placa, "tipo_movimento": tipo, "material": material, "peso_liquido": p_l, "destino": destino, "operador": st.session_state['usuario']}
-            supabase.table("balanca").insert(dados).execute()
-            if tipo == "Entrada (Insumo)": atualizar_estoque_direto(material, p_l, "soma")
-            elif tipo == "Saída (Massa Asfáltica)": dar_baixa_estoque_cbuq(p_l)
-            elif tipo == "Saída (Diversos)": atualizar_estoque_direto(material, p_l, "subtrai")
-            st.success("Salvo!"); st.download_button("📥 PDF", gerar_pdf_ticket(dados), f"ticket_{placa}.pdf")
+            if placa and p_l > 0:
+                url_foto = ""
+                if foto:
+                    try: url_foto = cloudinary.uploader.upload(foto)["secure_url"]
+                    except: pass
+                dados = {"placa": placa, "tipo_movimento": tipo, "material": material, "peso_liquido": p_l, "destino": destino, "operador": st.session_state['usuario'], "foto_url": url_foto}
+                try:
+                    supabase.table("balanca").insert(dados).execute()
+                    if tipo == "Entrada (Insumo)": atualizar_estoque_direto(material, p_l, "soma")
+                    elif tipo == "Saída (Massa Asfáltica)": dar_baixa_estoque_cbuq(p_l)
+                    elif tipo == "Saída (Diversos)": atualizar_estoque_direto(material, p_l, "subtrai")
+                    st.success("Salvo!"); st.download_button("📥 PDF", gerar_pdf_ticket(dados), f"ticket_{placa}.pdf")
+                except Exception as e: st.error(f"Erro ao salvar: {e}")
 
 # --- TAB 3: TRAÇO ---
 with tabs[2]:
@@ -127,58 +143,67 @@ with tabs[2]:
                 for k, v in n_perc.items(): supabase.table("config_traco").update({"porcentagem": v}).eq("item", k).execute()
                 st.rerun()
 
-# --- TAB 4: ALMOXARIFADO (NOVA) ---
+# --- TAB 4: ALMOXARIFADO ---
 with tabs[3]:
-    st.header("📦 Controle de Almoxarifado")
-    menu = st.radio("Ação:", ["Ver Estoque", "Lançar Entrada/Saída", "Cadastrar Novo Item"], horizontal=True)
-    
+    st.header("📦 Almoxarifado")
+    menu = st.radio("Ação:", ["Ver Estoque", "Lançar Movimento", "Cadastrar Novo Item"], horizontal=True)
     if menu == "Ver Estoque":
         res_alm = supabase.table("almoxarifado").select("*").execute()
-        if res_alm.data:
-            df_alm = pd.DataFrame(res_alm.data)
-            st.dataframe(df_alm[['item', 'categoria', 'quantidade', 'unidade']], use_container_width=True)
-    
-    elif menu == "Lançar Entrada/Saída":
-        res_itens = supabase.table("almoxarifado").select("item").execute()
-        itens_lista = [r['item'] for r in res_itens.data]
-        if itens_lista:
-            with st.form("f_mov_alm"):
-                item_sel = st.selectbox("Selecione o Item", itens_lista)
-                mov_tipo = st.selectbox("Tipo", ["Entrada (+)", "Saída (-)"])
-                qtd_mov = st.number_input("Quantidade", min_value=0.1)
-                if st.form_submit_button("Confirmar Movimentação"):
-                    res_q = supabase.table("almoxarifado").select("quantidade").eq("item", item_sel).execute()
-                    nova_q = (res_q.data[0]['quantidade'] + qtd_mov) if "Entrada" in mov_tipo else (res_q.data[0]['quantidade'] - qtd_mov)
-                    supabase.table("almoxarifado").update({"quantidade": nova_q}).eq("item", item_sel).execute()
-                    st.success(f"Estoque de {item_sel} atualizado!"); st.rerun()
-    
+        if res_alm.data: st.dataframe(pd.DataFrame(res_alm.data)[['item', 'categoria', 'quantidade', 'unidade']], use_container_width=True)
+    elif menu == "Lançar Movimento":
+        res_i = supabase.table("almoxarifado").select("item").execute()
+        lista = [r['item'] for r in res_i.data]
+        if lista:
+            with st.form("mov_alm"):
+                it, t_m, q_m = st.selectbox("Item", lista), st.selectbox("Tipo", ["Entrada", "Saída"]), st.number_input("Qtd", min_value=0.1)
+                if st.form_submit_button("Confirmar"):
+                    cur_q = supabase.table("almoxarifado").select("quantidade").eq("item", it).execute().data[0]['quantidade']
+                    nova = (cur_q + q_m) if t_m == "Entrada" else (cur_q - q_m)
+                    supabase.table("almoxarifado").update({"quantidade": nova}).eq("item", it).execute()
+                    st.success("Atualizado!"); st.rerun()
     elif menu == "Cadastrar Novo Item":
-        with st.form("f_novo_item"):
-            n_item = st.text_input("Nome do Material")
-            n_cat = st.selectbox("Categoria", ["Escritório", "Manutenção", "Consumo/Limpeza", "EPis", "Outros"])
-            n_un = st.selectbox("Unidade de Medida", ["Unidade", "Litro", "Caixa", "Pacote", "Kg", "Metro"])
-            if st.form_submit_button("Cadastrar Item"):
-                try:
-                    supabase.table("almoxarifado").insert({"item": n_item, "categoria": n_cat, "unidade": n_un, "quantidade": 0}).execute()
-                    st.success("Item cadastrado!"); st.rerun()
-                except: st.error("Item já existe ou erro na conexão.")
+        with st.form("n_alm"):
+            ni, nc, nu = st.text_input("Item"), st.selectbox("Cat", ["Escritório", "Manutenção", "Limpeza"]), st.text_input("Unidade (Ex: Un, Cx)")
+            if st.form_submit_button("Cadastrar"):
+                supabase.table("almoxarifado").insert({"item": ni, "categoria": nc, "unidade": nu, "quantidade": 0}).execute()
+                st.success("Cadastrado!"); st.rerun()
 
-# --- TAB 5: MANUTENÇÃO ---
+# --- TAB 5: MANUTENÇÃO (CORRIGIDA - LINHA 175) ---
 with tabs[4]:
-    st.subheader("Diário de Paradas")
+    st.subheader("🛠️ Diário de Manutenção")
     with st.form("f_manut"):
         mot = st.selectbox("Motivo", ["Preventiva", "Quebra", "Chuva", "Insumo"])
-        d1, h1 = st.date_input("Início"), st.time_input("Hora Início")
-        d2, h2 = st.date_input("Fim"), st.time_input("Hora Fim")
+        c_i, c_f = st.columns(2)
+        with c_i: d1 = st.date_input("Data Início"); h1 = st.time_input("Hora Início")
+        with c_f: d2 = st.date_input("Data Fim"); h2 = st.time_input("Hora Fim")
+        obs = st.text_area("Observações")
         if st.form_submit_button("Registrar Parada"):
-            t = (datetime.combine(d2, h2) - datetime.combine(d1, h1)).total_seconds() / 3600
-            supabase.table("manutencao_paradas").insert({"motivo": mot, "tempo": round(t, 2)}).execute()
-            st.success(f"Registrado {t:.2f}h")
+            dt_inicio = datetime.combine(d1, h1)
+            dt_fim = datetime.combine(d2, h2)
+            tempo_h = (dt_fim - dt_inicio).total_seconds() / 3600
+            if tempo_h < 0:
+                st.error("Data de fim não pode ser anterior ao início.")
+            else:
+                # CORREÇÃO AQUI: Enviando todos os campos que o banco espera
+                dados_parada = {
+                    "motivo": mot, 
+                    "tempo": round(tempo_h, 2),
+                    "data_inicio": dt_inicio.isoformat(),
+                    "data_fim": dt_fim.isoformat(),
+                    "obs": obs
+                }
+                try:
+                    supabase.table("manutencao_paradas").insert(dados_parada).execute()
+                    st.success(f"Registrado com sucesso: {tempo_h:.2f} horas.")
+                except Exception as e:
+                    st.error(f"Erro ao salvar no banco: {e}")
 
 # --- TAB 6: ADMIN ---
 with tabs[5]:
     if st.session_state["perfil"] == "Administrador":
-        if st.button("Resetar Insumos"):
+        st.subheader("Configurações do Sistema")
+        if st.button("Resetar/Criar Tabelas de Insumos"):
             for i in ["CAP", "Pó de Brita", "Brita 0", "Brita 3/4", "Imprimante", "Cola"]:
                 try: supabase.table("estoque_insumos").insert({"item": i, "quantidade_kg": 0}).execute()
                 except: pass
+            st.success("Estoque de insumos verificado.")
