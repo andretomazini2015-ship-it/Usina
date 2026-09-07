@@ -13,233 +13,172 @@ import cloudinary.uploader
 # ==========================================
 st.set_page_config(page_title="Usina Municipal de Vilhena", layout="wide", page_icon="🏭")
 
-# Conexão Supabase
 try:
     url: str = st.secrets["SUPABASE_URL"]
     key: str = st.secrets["SUPABASE_KEY"]
     supabase: Client = create_client(url, key)
-except Exception as e:
-    st.error("Erro de conexão com Supabase. Verifique os Secrets.")
+except:
+    st.error("Erro de conexão com Supabase.")
     st.stop()
 
-# Conexão Cloudinary
+# Cloudinary (opcional)
 try:
-    cloudinary.config(
-      cloud_name = st.secrets["CLOUDINARY_NAME"],
-      api_key = st.secrets["CLOUDINARY_KEY"],
-      api_secret = st.secrets["CLOUDINARY_SECRET"],
-      secure = True
-    )
-except:
-    st.warning("Cloudinary não configurado. As fotos não serão processadas.")
+    cloudinary.config(cloud_name=st.secrets["CLOUDINARY_NAME"], api_key=st.secrets["CLOUDINARY_KEY"], api_secret=st.secrets["CLOUDINARY_SECRET"], secure=True)
+except: pass
 
 # ==========================================
 # 2. FUNÇÕES DE APOIO
 # ==========================================
-def gerar_hash_senha(senha):
-    return hashlib.sha256(str.encode(senha)).hexdigest()
-
-def verificar_senha(senha, hash_armazenado):
-    return gerar_hash_senha(senha) == hash_armazenado
+def gerar_hash_senha(senha): return hashlib.sha256(str.encode(senha)).hexdigest()
+def verificar_senha(senha, hash_armazenado): return gerar_hash_senha(senha) == hash_armazenado
 
 def gerar_pdf_ticket(dados):
-    """Gera o comprovante em PDF tratando erros de codificação e bytes"""
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", "B", 16)
     pdf.cell(190, 10, "PREFEITURA MUNICIPAL DE VILHENA", ln=True, align="C")
-    pdf.set_font("Arial", "", 12)
-    pdf.cell(190, 10, "USINA MUNICIPAL - COMPROVANTE DE PESAGEM", ln=True, align="C")
     pdf.ln(10)
-    
     pdf.set_font("Arial", "", 11)
     for k, v in dados.items():
         if k != "foto_url":
-            # Limpa acentos para evitar erro no FPDF
-            txt_k = str(k).upper().replace("Í", "I").replace("Á", "A").replace("Õ", "O").replace("Ç", "C").replace("É", "E")
-            txt_v = str(v).replace("Í", "I").replace("Á", "A").replace("Õ", "O").replace("Ç", "C").replace("É", "E")
-            pdf.cell(50, 8, f"{txt_k}:", border=1)
-            pdf.cell(140, 8, f"{txt_v}", border=1, ln=True)
-    
-    # Captura a saída do PDF
-    resultado = pdf.output(dest="S")
-    
-    # CORREÇÃO DO ERRO 'bytearray' object has no attribute 'encode'
-    if isinstance(resultado, (bytes, bytearray)):
-        return bytes(resultado) # Já está em bytes, apenas garante o formato
-    return resultado.encode("latin-1", "replace") # Se for string, encoda
+            pdf.cell(50, 8, f"{str(k).upper()}:", border=1)
+            pdf.cell(140, 8, f"{str(v)}", border=1, ln=True)
+    res = pdf.output(dest="S")
+    return bytes(res) if isinstance(res, (bytes, bytearray)) else res.encode("latin-1", "replace")
 
 def dar_baixa_estoque_cbuq(peso_liquido_kg):
-    """Cálculo do Traço e Baixa no Banco"""
-    TRACO = {"CAP": 0.05, "Pó de Brita": 0.54, "Brita 0": 0.23, "Brita 3/4": 0.18}
-    for insumo, perc in TRACO.items():
-        qtd_consumida = peso_liquido_kg * perc
-        res = supabase.table("estoque_insumos").select("quantidade_kg").eq("item", insumo).execute()
-        if res.data:
-            nova_qtd = res.data[0]['quantidade_kg'] - qtd_consumida
-            supabase.table("estoque_insumos").update({"quantidade_kg": nova_qtd}).eq("item", insumo).execute()
+    res_traco = supabase.table("config_traco").select("*").execute()
+    if res_traco.data:
+        for row in res_traco.data:
+            qtd = peso_liquido_kg * (row['porcentagem'] / 100)
+            res_at = supabase.table("estoque_insumos").select("quantidade_kg").eq("item", row['item']).execute()
+            if res_at.data:
+                nova = res_at.data[0]['quantidade_kg'] - qtd
+                supabase.table("estoque_insumos").update({"quantidade_kg": nova}).eq("item", row['item']).execute()
+
+def atualizar_estoque_direto(material, peso, op="soma"):
+    res = supabase.table("estoque_insumos").select("quantidade_kg").eq("item", material).execute()
+    if res.data:
+        nova = (res.data[0]['quantidade_kg'] + peso) if op == "soma" else (res.data[0]['quantidade_kg'] - peso)
+        supabase.table("estoque_insumos").update({"quantidade_kg": nova}).eq("item", material).execute()
 
 # ==========================================
-# 3. CONTROLE DE ACESSO
+# 3. ACESSO
 # ==========================================
-if "autenticado" not in st.session_state:
-    st.session_state.update({"autenticado": False, "usuario": "", "nome": "", "perfil": ""})
+if "autenticado" not in st.session_state: st.session_state.update({"autenticado": False, "usuario": "", "perfil": ""})
 
 if not st.session_state["autenticado"]:
     st.title("🏛️ Sistema Usina Municipal")
     with st.form("login"):
-        u_in = st.text_input("Usuário").lower().strip()
-        p_in = st.text_input("Senha", type="password")
+        u, p = st.text_input("Usuário"), st.text_input("Senha", type="password")
         if st.form_submit_button("Entrar"):
-            try:
-                res = supabase.table("usuarios").select("*").eq("usuario", u_in).execute()
-                if res.data and verificar_senha(p_in, res.data[0]['senha_hash']):
-                    st.session_state.update({
-                        "autenticado": True, 
-                        "usuario": u_in, 
-                        "nome": res.data[0]['nome'], 
-                        "perfil": res.data[0]['perfil']
-                    })
-                    st.rerun()
-                else:
-                    st.error("Usuário ou senha incorretos.")
-            except Exception as e:
-                st.error(f"Erro ao conectar: {e}")
+            res = supabase.table("usuarios").select("*").eq("usuario", u.lower()).execute()
+            if res.data and verificar_senha(p, res.data[0]['senha_hash']):
+                st.session_state.update({"autenticado": True, "usuario": u, "perfil": res.data[0]['perfil']})
+                st.rerun()
+            else: st.error("Erro no login.")
     st.stop()
 
 # ==========================================
-# 4. LAYOUT PRINCIPAL
+# 4. DASHBOARD & ABAS
 # ==========================================
-st.sidebar.title(f"Olá, {st.session_state['nome']}")
-if st.sidebar.button("Sair"):
-    st.session_state["autenticado"] = False
-    st.rerun()
-
-tabs = st.tabs(["📊 Dashboard", "🚛 Entrada/Saída", "📈 WhatsApp", "🛠️ Manutenção", "👤 Admin"])
+st.sidebar.button("Sair", on_click=lambda: st.session_state.update({"autenticado": False}))
+tabs = st.tabs(["📊 Dashboard", "🚛 Balança", "🏗️ Traço", "📦 Almoxarifado", "🛠️ Manutenção", "👤 Admin"])
 
 # --- TAB 1: DASHBOARD ---
 with tabs[0]:
-    st.header("Status do Estoque de Insumos")
-    try:
-        res_est = supabase.table("estoque_insumos").select("*").execute()
-        if res_est.data and len(res_est.data) > 0:
-            df_est = pd.DataFrame(res_est.data)
-            
-            # Métricas
-            cols_m = st.columns(len(df_est))
-            for i, row in df_est.iterrows():
-                cols_m[i].metric(row['item'], f"{row['quantidade_kg']:,.0f} kg")
-            
-            # Gráfico
-            st.bar_chart(df_est.set_index("item")["quantidade_kg"])
-        else:
-            st.warning("Estoque não encontrado. Vá em Admin ou rode o SQL de inicialização.")
-            if st.button("Criar Estoque Inicial"):
-                itens = [
-                    {"item": "CAP", "quantidade_kg": 10000},
-                    {"item": "Pó de Brita", "quantidade_kg": 50000},
-                    {"item": "Brita 0", "quantidade_kg": 50000},
-                    {"item": "Brita 3/4", "quantidade_kg": 50000}
-                ]
-                supabase.table("estoque_insumos").insert(itens).execute()
-                st.rerun()
-    except Exception as e:
-        st.error(f"Erro ao carregar dados: {e}")
+    st.header("Insumos de Produção")
+    res = supabase.table("estoque_insumos").select("*").execute()
+    if res.data:
+        df = pd.DataFrame(res.data)
+        m = st.columns(len(df))
+        for i, r in df.iterrows(): m[i].metric(r['item'], f"{r['quantidade_kg']:,.0f} kg")
 
-# --- TAB 2: ENTRADA/SAÍDA ---
+# --- TAB 2: BALANÇA ---
 with tabs[1]:
-    st.subheader("Registro de Balança")
-    
-    # Define as colunas antes de usá-las
-    col1, col2 = st.columns(2)
-    
-    with col1:
+    st.subheader("Entrada e Saída de Materiais")
+    c1, c2 = st.columns(2)
+    with c1:
         placa = st.text_input("Placa").upper()
-        motorista = st.text_input("Motorista")
-        tipo_op = st.selectbox("Operação", ["Saída (Massa Asfáltica)", "Entrada (Insumo)"])
-        
-        if "Saída" in tipo_op:
-            destino = st.text_input("Destino / Obra")
-            material = "Massa Asfáltica CBUQ"
-        else:
-            destino = "Usina"
-            material = st.selectbox("Insumo", ["CAP", "Pó de Brita", "Brita 0", "Brita 3/4"])
-            
-        p_bruto = st.number_input("Peso Bruto (kg)", 0.0)
-        tara = st.number_input("Tara (kg)", 0.0)
-        p_liquido = p_bruto - tara
-        st.metric("Peso Líquido", f"{p_liquido} kg")
+        tipo = st.selectbox("Operação", ["Saída (Massa Asfáltica)", "Entrada (Insumo)", "Saída (Diversos)"])
+        if tipo == "Saída (Massa Asfáltica)": material, destino = "Massa Asfáltica CBUQ", st.text_input("Destino")
+        elif tipo == "Entrada (Insumo)": material, destino = st.selectbox("Insumo", ["CAP", "Pó de Brita", "Brita 0", "Brita 3/4", "Imprimante", "Cola"]), "Usina"
+        else: material, destino = st.text_input("Material Diversos"), st.text_input("Destino")
+        p_l = st.number_input("Peso Líquido (kg)", 0.0)
+    with c2:
+        foto = st.camera_input("Foto")
+        if st.button("💾 Salvar Pesagem"):
+            dados = {"placa": placa, "tipo_movimento": tipo, "material": material, "peso_liquido": p_l, "destino": destino, "operador": st.session_state['usuario']}
+            supabase.table("balanca").insert(dados).execute()
+            if tipo == "Entrada (Insumo)": atualizar_estoque_direto(material, p_l, "soma")
+            elif tipo == "Saída (Massa Asfáltica)": dar_baixa_estoque_cbuq(p_l)
+            elif tipo == "Saída (Diversos)": atualizar_estoque_direto(material, p_l, "subtrai")
+            st.success("Salvo!"); st.download_button("📥 PDF", gerar_pdf_ticket(dados), f"ticket_{placa}.pdf")
 
-    with col2:
-        foto = st.camera_input("Foto do Carregamento")
-        
-        if st.button("💾 Finalizar Registro"):
-            if placa and p_liquido > 0:
-                with st.spinner("Salvando..."):
-                    url_foto = ""
-                    if foto:
-                        try:
-                            up = cloudinary.uploader.upload(foto)
-                            url_foto = up["secure_url"]
-                        except: pass
-
-                    dados_registro = {
-                        "placa": placa,
-                        "motorista": motorista,
-                        "tipo_movimento": tipo_op,
-                        "material": material,
-                        "peso_liquido": p_liquido,
-                        "destino": destino,
-                        "operador": st.session_state['usuario'],
-                        "foto_url": url_foto
-                    }
-                    
-                    try:
-                        # 1. Salva no Banco
-                        supabase.table("balanca").insert(dados_registro).execute()
-                        
-                        # 2. Baixa estoque se for saída
-                        if "Saída" in tipo_op:
-                            dar_baixa_estoque_cbuq(p_liquido)
-                        
-                        st.success("✅ Registro salvo com sucesso!")
-                        
-                        # 3. PDF
-                        pdf_bytes = gerar_pdf_ticket(dados_registro)
-                        st.download_button("📥 Baixar Comprovante", pdf_bytes, f"ticket_{placa}.pdf", "application/pdf")
-                    
-                    except Exception as e:
-                        st.error(f"Erro ao salvar: {e}")
-            else:
-                st.warning("Verifique se a placa e os pesos estão corretos.")
-
-# --- TAB 3: WHATSAPP ---
+# --- TAB 3: TRAÇO ---
 with tabs[2]:
-    st.subheader("Relatórios")
-    texto = f"🏛️ *USINA VILHENA* - Relatório {datetime.now().strftime('%d/%m/%Y')}"
-    st.markdown(f"[🟢 Enviar Status via WhatsApp](https://wa.me/?text={urllib.parse.quote(texto)})")
+    st.subheader("Configuração do Traço")
+    res_t = supabase.table("config_traco").select("*").execute()
+    if res_t.data:
+        with st.form("f_traco"):
+            n_perc = {}
+            for r in res_t.data: n_perc[r['item']] = st.number_input(f"% {r['item']}", 0.0, 100.0, float(r['porcentagem']))
+            if st.form_submit_button("Salvar Traço"):
+                for k, v in n_perc.items(): supabase.table("config_traco").update({"porcentagem": v}).eq("item", k).execute()
+                st.rerun()
 
-# --- TAB 4: MANUTENÇÃO ---
+# --- TAB 4: ALMOXARIFADO (NOVA) ---
 with tabs[3]:
-    st.subheader("Registro de Paradas")
-    with st.form("parada"):
-        mot = st.selectbox("Motivo", ["Chuva", "Quebra", "Manutenção", "Falta Insumo"])
-        tempo = st.number_input("Horas", 0.0)
-        if st.form_submit_button("Registrar"):
-            supabase.table("manutencao_paradas").insert({"motivo": mot, "tempo": tempo}).execute()
-            st.success("OK")
+    st.header("📦 Controle de Almoxarifado")
+    menu = st.radio("Ação:", ["Ver Estoque", "Lançar Entrada/Saída", "Cadastrar Novo Item"], horizontal=True)
+    
+    if menu == "Ver Estoque":
+        res_alm = supabase.table("almoxarifado").select("*").execute()
+        if res_alm.data:
+            df_alm = pd.DataFrame(res_alm.data)
+            st.dataframe(df_alm[['item', 'categoria', 'quantidade', 'unidade']], use_container_width=True)
+    
+    elif menu == "Lançar Entrada/Saída":
+        res_itens = supabase.table("almoxarifado").select("item").execute()
+        itens_lista = [r['item'] for r in res_itens.data]
+        if itens_lista:
+            with st.form("f_mov_alm"):
+                item_sel = st.selectbox("Selecione o Item", itens_lista)
+                mov_tipo = st.selectbox("Tipo", ["Entrada (+)", "Saída (-)"])
+                qtd_mov = st.number_input("Quantidade", min_value=0.1)
+                if st.form_submit_button("Confirmar Movimentação"):
+                    res_q = supabase.table("almoxarifado").select("quantidade").eq("item", item_sel).execute()
+                    nova_q = (res_q.data[0]['quantidade'] + qtd_mov) if "Entrada" in mov_tipo else (res_q.data[0]['quantidade'] - qtd_mov)
+                    supabase.table("almoxarifado").update({"quantidade": nova_q}).eq("item", item_sel).execute()
+                    st.success(f"Estoque de {item_sel} atualizado!"); st.rerun()
+    
+    elif menu == "Cadastrar Novo Item":
+        with st.form("f_novo_item"):
+            n_item = st.text_input("Nome do Material")
+            n_cat = st.selectbox("Categoria", ["Escritório", "Manutenção", "Consumo/Limpeza", "EPis", "Outros"])
+            n_un = st.selectbox("Unidade de Medida", ["Unidade", "Litro", "Caixa", "Pacote", "Kg", "Metro"])
+            if st.form_submit_button("Cadastrar Item"):
+                try:
+                    supabase.table("almoxarifado").insert({"item": n_item, "categoria": n_cat, "unidade": n_un, "quantidade": 0}).execute()
+                    st.success("Item cadastrado!"); st.rerun()
+                except: st.error("Item já existe ou erro na conexão.")
 
-# --- TAB 5: ADMIN ---
+# --- TAB 5: MANUTENÇÃO ---
 with tabs[4]:
+    st.subheader("Diário de Paradas")
+    with st.form("f_manut"):
+        mot = st.selectbox("Motivo", ["Preventiva", "Quebra", "Chuva", "Insumo"])
+        d1, h1 = st.date_input("Início"), st.time_input("Hora Início")
+        d2, h2 = st.date_input("Fim"), st.time_input("Hora Fim")
+        if st.form_submit_button("Registrar Parada"):
+            t = (datetime.combine(d2, h2) - datetime.combine(d1, h1)).total_seconds() / 3600
+            supabase.table("manutencao_paradas").insert({"motivo": mot, "tempo": round(t, 2)}).execute()
+            st.success(f"Registrado {t:.2f}h")
+
+# --- TAB 6: ADMIN ---
+with tabs[5]:
     if st.session_state["perfil"] == "Administrador":
-        st.subheader("Gestão de Usuários")
-        with st.form("add_user"):
-            new_u = st.text_input("Login")
-            new_n = st.text_input("Nome")
-            new_s = st.text_input("Senha", type="password")
-            if st.form_submit_button("Cadastrar Operador"):
-                h = gerar_hash_senha(new_s)
-                supabase.table("usuarios").insert({"usuario": new_u, "senha_hash": h, "nome": new_n, "perfil": "Operador"}).execute()
-                st.success("Criado!")
-    else:
-        st.warning("Acesso restrito.")
+        if st.button("Resetar Insumos"):
+            for i in ["CAP", "Pó de Brita", "Brita 0", "Brita 3/4", "Imprimante", "Cola"]:
+                try: supabase.table("estoque_insumos").insert({"item": i, "quantidade_kg": 0}).execute()
+                except: pass
