@@ -2,23 +2,25 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import hashlib
+import urllib.parse
+import io
+from fpdf import FPDF
 from supabase import create_client, Client
 import cloudinary
 import cloudinary.uploader
-import urllib.parse
 
 # ==========================================
 # 1. CONFIGURAÇÕES E CONEXÕES
 # ==========================================
 st.set_page_config(page_title="Usina Municipal de Vilhena", layout="wide", page_icon="🏭")
 
-# Tente conectar ao Supabase (Certifique-se de que os secrets estão configurados)
+# Conexão Supabase
 try:
     url: str = st.secrets["SUPABASE_URL"]
     key: str = st.secrets["SUPABASE_KEY"]
     supabase: Client = create_client(url, key)
 except Exception as e:
-    st.error("Erro ao conectar ao banco de dados. Verifique seus 'Secrets'.")
+    st.error(f"Erro de conexão com Supabase: {e}. Verifique os Secrets.")
     st.stop()
 
 # Conexão Cloudinary
@@ -30,10 +32,10 @@ try:
       secure = True
     )
 except:
-    st.warning("Cloudinary não configurado. As fotos não serão salvas.")
+    st.warning("Cloudinary não configurado. As fotos não serão processadas.")
 
 # ==========================================
-# 2. FUNÇÕES DE SEGURANÇA E NEGÓCIO
+# 2. FUNÇÕES DE APOIO E SEGURANÇA
 # ==========================================
 def gerar_hash_senha(senha):
     return hashlib.sha256(str.encode(senha)).hexdigest()
@@ -41,50 +43,53 @@ def gerar_hash_senha(senha):
 def verificar_senha(senha, hash_armazenado):
     return gerar_hash_senha(senha) == hash_armazenado
 
-def garantir_admin_padrao():
-    """Garante que o usuário Andre exista com a senha correta"""
-    user_admin = "andre"
-    senha_admin = "02152518Ab@" # Senha Corrigida
-    hash_novo = gerar_hash_senha(senha_admin)
-    
-    try:
-        res = supabase.table("usuarios").select("*").eq("usuario", user_admin).execute()
-        if not res.data:
-            supabase.table("usuarios").insert({
-                "usuario": user_admin,
-                "senha_hash": hash_novo,
-                "nome": "André (Admin)",
-                "perfil": "Administrador"
-            }).execute()
-        else:
-            # Atualiza a senha caso tenha mudado no código
-            supabase.table("usuarios").update({"senha_hash": hash_novo}).eq("usuario", user_admin).execute()
-    except Exception as e:
-        st.error(f"Erro na linha 30 (Tabela 'usuarios'): {e}")
+def sincronizar_usuarios_padrao():
+    """Garante usuários mestres no sistema"""
+    usuarios = [
+        {"u": "andre", "s": "02152518Ab@", "n": "André (Admin)", "p": "Administrador"},
+        {"u": "usina", "s": "123", "n": "Operador Usina", "p": "Operador"}
+    ]
+    for user in usuarios:
+        h = gerar_hash_senha(user["s"])
+        try:
+            res = supabase.table("usuarios").select("*").eq("usuario", user["u"]).execute()
+            if not res.data:
+                supabase.table("usuarios").insert({"usuario": user["u"], "senha_hash": h, "nome": user["n"], "perfil": user["p"]}).execute()
+            else:
+                supabase.table("usuarios").update({"senha_hash": h}).eq("usuario", user["u"]).execute()
+        except: pass
+
+def gerar_pdf_ticket(dados):
+    """MODIFICAÇÃO 2: Gerador de Comprovante PDF"""
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(190, 10, "PREFEITURA MUNICIPAL DE VILHENA", ln=True, align="C")
+    pdf.set_font("Arial", "", 12)
+    pdf.cell(190, 10, "USINA MUNICIPAL - COMPROVANTE DE PESAGEM", ln=True, align="C")
+    pdf.ln(10)
+    pdf.set_font("Arial", "", 11)
+    for k, v in dados.items():
+        if k != "foto_path":
+            pdf.cell(50, 8, f"{k.upper()}:", border=1)
+            pdf.cell(140, 8, f"{v}", border=1, ln=True)
+    return pdf.output(dest="S").encode("latin-1")
 
 def dar_baixa_estoque_cbuq(peso_liquido):
-    """Baixa automática com traço corrigido"""
-    TRACO = {
-        "CAP": 0.05,            # 5%
-        "Pó de Brita": 0.54,    # 54%
-        "Brita 0": 0.23,        # 23%
-        "Brita 3/4": 0.18       # 18%
-    }
-    try:
-        for insumo, percentual in TRACO.items():
-            qtd_consumida = peso_liquido * percentual
-            res = supabase.table("estoque_insumos").select("quantidade_kg").eq("item", insumo).execute()
-            if res.data:
-                nova_qtd = res.data[0]['quantidade_kg'] - qtd_consumida
-                supabase.table("estoque_insumos").update({"quantidade_kg": nova_qtd}).eq("item", insumo).execute()
-    except Exception as e:
-        st.error(f"Erro na linha 46 (Tabela 'estoque_insumos'): {e}")
+    """Cálculo do Traço: CAP 5%, Pó 54%, Brita0 23%, Brita3/4 18%"""
+    TRACO = {"CAP": 0.05, "Pó de Brita": 0.54, "Brita 0": 0.23, "Brita 3/4": 0.18}
+    for insumo, perc in TRACO.items():
+        qtd_consumida = peso_liquido * perc
+        res = supabase.table("estoque_insumos").select("quantidade_kg").eq("item", insumo).execute()
+        if res.data:
+            nova_qtd = res.data[0]['quantidade_kg'] - qtd_consumida
+            supabase.table("estoque_insumos").update({"quantidade_kg": nova_qtd}).eq("item", insumo).execute()
 
-# Executa a verificação do admin ao carregar o app
-garantir_admin_padrao()
+# Inicialização
+sincronizar_usuarios_padrao()
 
 # ==========================================
-# 3. INTERFACE (LOGIN)
+# 3. CONTROLE DE ACESSO
 # ==========================================
 if "autenticado" not in st.session_state:
     st.session_state.update({"autenticado": False, "usuario": "", "nome": "", "perfil": "", "fotos_temp": []})
@@ -92,61 +97,103 @@ if "autenticado" not in st.session_state:
 if not st.session_state["autenticado"]:
     st.title("🏛️ Usina Municipal de Vilhena")
     with st.form("login"):
-        u = st.text_input("Usuário").lower().strip()
-        p = st.text_input("Senha", type="password")
+        u_in = st.text_input("Usuário").lower().strip()
+        p_in = st.text_input("Senha", type="password")
         if st.form_submit_button("Entrar"):
-            res = supabase.table("usuarios").select("*").eq("usuario", u).execute()
-            if res.data and verificar_senha(p, res.data[0]['senha_hash']):
-                st.session_state.update({
-                    "autenticado": True, "usuario": res.data[0]['usuario'], 
-                    "nome": res.data[0]['nome'], "perfil": res.data[0]['perfil']
-                })
+            res = supabase.table("usuarios").select("*").eq("usuario", u_in).execute()
+            if res.data and verificar_senha(p_in, res.data[0]['senha_hash']):
+                st.session_state.update({"autenticado": True, "usuario": u_in, "nome": res.data[0]['nome'], "perfil": res.data[0]['perfil']})
                 st.rerun()
-            else:
-                st.error("Login inválido")
+            else: st.error("Acesso Negado.")
     st.stop()
 
 # ==========================================
-# 4. PAINEL PRINCIPAL
+# 4. APLICATIVO PRINCIPAL
 # ==========================================
-st.title("Usina Municipal de Vilhena")
-abas = st.tabs(["📊 Dashboard", "🚛 Balança", "📈 Relatório WhatsApp", "👤 Admin"])
+st.sidebar.image("https://i.imgur.com/8Yv9XkS.png", width=150) # Espaço para logo
+st.sidebar.title(f"Olá, {st.session_state['nome']}")
+if st.sidebar.button("Sair"):
+    st.session_state["autenticado"] = False
+    st.rerun()
 
-with abas[1]: # ABA BALANÇA
-    st.subheader("Registro de Pesagem")
-    col1, col2 = st.columns(2)
-    with col1:
+tabs = st.tabs(["📊 Dashboard", "🚛 Entrada/Saida", "📈 WhatsApp", "🛠️ Manutenção/Almoxarifado", "👤 Admin"])
+
+# --- TAB 1: DASHBOARD (MODIFICAÇÃO 4: ALERTAS) ---
+with tabs[0]:
+    st.header("Painel de Controle Usina")
+    try:
+        res_est = supabase.table("estoque_insumos").select("*").execute()
+        if res_est.data:
+            # Alertas Críticos
+            for r in res_est.data:
+                if r['quantidade_kg'] < 3000:
+                    st.error(f"🚨 **ALERTA CRÍTICO:** Estoque de {r['item']} abaixo de 3.000kg!")
+            
+            # Métricas Visuais
+            m = st.columns(len(res_est.data))
+            for i, r in enumerate(res_est.data):
+                m[i].metric(r['item'], f"{r['quantidade_kg']:,.0f} kg")
+            st.bar_chart(pd.DataFrame(res_est.data).set_index("item")["quantidade_kg"])
+    except: st.info("Sem dados de estoque.")
+
+# --- TAB 2: ENTRADA/SAIDA (MODIFICAÇÃO 1: DESTINO | MODIFICAÇÃO 2: PDF) ---
+with tabs[1]:
+    st.subheader("Registro de Balança")
+    c1, c2 = st.columns(2)
+    with c1:
         placa = st.text_input("Placa").upper()
-        tipo_mov = st.selectbox("Operação", ["Saída (Massa Asfáltica)", "Entrada (Insumo)"])
-        material = st.selectbox("Material", ["Massa Asfáltica CBUQ", "CAP", "Pó de Brita", "Brita 0", "Brita 3/4", "Outros"])
-        p_bruto = st.number_input("Peso Bruto (kg)", 0.0)
-        p_tara = st.number_input("Tara (kg)", 0.0)
-        p_liq = p_bruto - p_tara
-        st.metric("Líquido", f"{p_liq} kg")
+        motorista = st.text_input("Motorista")
+        tipo_op = st.selectbox("Operação", ["Saída (Massa Asfáltica)", "Entrada (Insumo)"])
         
-    with col2:
+        # Destino (Modificação 1)
+        destino = st.text_input("Destino/Obra/Rua") if "Saída" in tipo_op else "Usina"
+        mat = st.selectbox("Material", ["Massa Asfáltica CBUQ", "CAP", "Pó de Brita", "Brita 0", "Brita 3/4"]) if "Entrada" in tipo_op else "Massa Asfáltica CBUQ"
+        
+        p_b = st.number_input("Peso Bruto (kg)", 0.0)
+        p_t = st.number_input("Tara (kg)", 0.0)
+        p_l = p_b - p_t
+        st.metric("Peso Líquido", f"{p_l} kg")
+
+    with c2:
+        foto = st.camera_input("Foto do Carregamento")
         if st.button("Finalizar Registro"):
-            dados = {"placa": placa, "tipo_movimento": tipo_mov, "material": material, "peso_liquido": p_liq, "operador": st.session_state["usuario"]}
-            supabase.table("balanca").insert(dados).execute()
-            if tipo_mov.startswith("Saída") and material == "Massa Asfáltica CBUQ":
-                dar_baixa_estoque_cbuq(p_liq)
-            st.success("Salvo com sucesso!")
+            if p_l > 0 and placa:
+                dados = {"placa": placa, "motorista": motorista, "tipo_movimento": tipo_op, "material": mat, "peso_liquido": p_l, "destino": destino, "operador": st.session_state['usuario']}
+                supabase.table("balanca").insert(dados).execute()
+                if "Saída" in tipo_op and mat == "Massa Asfáltica CBUQ": dar_baixa_estoque_cbuq(p_l)
+                
+                pdf = gerar_pdf_ticket(dados)
+                st.download_button("📥 Baixar Ticket Comprovante", pdf, f"ticket_{placa}.pdf")
+                st.success("Salvo com sucesso!")
+            else: st.warning("Verifique os dados.")
 
-with abas[2]: # RELATÓRIO WHATSAPP
-    if st.button("Gerar Relatório Diário"):
-        hoje = datetime.now().strftime("%d/%m/%Y")
-        msg = f"🏛️ *USINA MUNICIPAL DE VILHENA*\n📅 Relatório: {hoje}\nStatus: Operacional\nTraço CBUQ: 5/54/23/18"
-        link = f"https://wa.me/?text={urllib.parse.quote(msg)}"
-        st.markdown(f"[🟢 Enviar Relatório WhatsApp]({link})")
+# --- TAB 3: WHATSAPP ---
+with tabs[2]:
+    st.subheader("Enviar Relatório Diário")
+    if st.button("Gerar Link WhatsApp"):
+        texto = f"🏛️ *USINA MUNICIPAL DE VILHENA*\n📅 Relatório: {datetime.now().strftime('%d/%m/%Y')}\nStatus: Operacional"
+        st.markdown(f"[🟢 Clique aqui para enviar](https://wa.me/?text={urllib.parse.quote(texto)})")
 
-with abas[3]: # GESTÃO DE USUÁRIOS
+# --- TAB 4: MANUTENÇÃO (MODIFICAÇÃO 3: DIÁRIO DE PARADAS) ---
+with tabs[3]:
+    st.subheader("🛠️ Diário de Manutenção e Almoxarifado")
+    with st.form("parada"):
+        motivo = st.selectbox("Motivo da Parada", ["Preventiva", "Quebra", "Chuva", "Falta Insumo"])
+        tempo = st.number_input("Horas Parado", 0.0)
+        obs = st.text_area("Notas Técnicas")
+        if st.form_submit_button("Registrar Evento"):
+            supabase.table("manutencao_paradas").insert({"motivo": motivo, "tempo": tempo, "obs": obs}).execute()
+            st.success("Registrado.")
+
+# --- TAB 5: ADMIN ---
+with tabs[4]:
     if st.session_state["perfil"] == "Administrador":
-        st.subheader("Cadastrar Novo Operador")
-        with st.form("novo_user"):
-            n_nome = st.text_input("Nome")
-            n_user = st.text_input("Login")
-            n_pass = st.text_input("Senha", type="password")
+        st.subheader("Gestão de Operadores")
+        with st.form("novo_u"):
+            n_u = st.text_input("Novo Usuário").lower()
+            n_s = st.text_input("Senha Temp", type="password")
             if st.form_submit_button("Criar"):
-                h = gerar_hash_senha(n_pass)
-                supabase.table("usuarios").insert({"usuario": n_user, "senha_hash": h, "nome": n_nome, "perfil": "Operador"}).execute()
+                h = gerar_hash_senha(n_s)
+                supabase.table("usuarios").insert({"usuario": n_u, "senha_hash": h, "perfil": "Operador", "nome": n_u}).execute()
                 st.success("Criado!")
+    else: st.warning("Acesso restrito ao Administrador.")
