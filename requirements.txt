@@ -1,4 +1,7 @@
 streamlit
 pandas
-pillow
+supabase
+cloudinary
+Pillow
+fpdf2
 openpyxl
