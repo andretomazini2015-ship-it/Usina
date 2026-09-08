@@ -9,9 +9,49 @@ import cloudinary
 import cloudinary.uploader
 
 # ==========================================
-# 1. CONFIGURAÇÕES E CONEXÕES
+# 1. CONFIGURAÇÕES, CONEXÕES E TRADUÇÃO CSS
 # ==========================================
 st.set_page_config(page_title="Usina Municipal de Vilhena", layout="wide", page_icon="🏭")
+
+# Hack de CSS para traduzir os botões da câmera
+st.markdown("""
+    <style>
+    /* Traduzir botão 'Take Photo' */
+    [data-testid="stCameraInputButton"] {
+        visibility: hidden;
+        position: relative;
+    }
+    [data-testid="stCameraInputButton"]:after {
+        content: '📸 Tirar Foto';
+        visibility: visible;
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        white-space: nowrap;
+        background-color: #f0f2f6;
+        padding: 10px;
+        border-radius: 5px;
+    }
+    /* Traduzir botão 'Clear photo' para 'Próxima Foto' */
+    [data-testid="stCameraInputClearButton"] {
+        visibility: hidden;
+        position: relative;
+    }
+    [data-testid="stCameraInputClearButton"]:after {
+        content: '➕ Próxima Foto';
+        visibility: visible;
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        white-space: nowrap;
+        background-color: #f0f2f6;
+        padding: 10px;
+        border-radius: 5px;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 try:
     url: str = st.secrets["SUPABASE_URL"]
@@ -134,22 +174,23 @@ if "🚛 Balança" in tab_map:
                 material, destino = st.text_input("Material Diversos", key="mat_div_balanca"), st.text_input("Destino", key="dest_div_balanca")
             p_l = st.number_input("Peso Líquido (kg)", 0.0, key="peso_balanca")
         with c2:
-            st.write("**📷 Capturar Fotos**")
-            foto_capturada = st.camera_input("Tirar Foto", key="camera_balanca")
+            st.info("💡 Tire a foto e clique em 'Próxima Foto' para tirar mais uma.")
+            foto_capturada = st.camera_input("Capturar Imagem", key="camera_balanca")
+            
             if foto_capturada:
                 if foto_capturada not in st.session_state["fotos_temp"]:
                     st.session_state["fotos_temp"].append(foto_capturada)
-                    st.toast(f"Foto {len(st.session_state['fotos_temp'])} adicionada!")
+                    st.toast(f"✅ Foto {len(st.session_state['fotos_temp'])} capturada!")
             
             if st.session_state["fotos_temp"]:
-                st.write(f"Fotos prontas: {len(st.session_state['fotos_temp'])}")
-                if st.button("Limpar Fotos", key="btn_limpar_fotos"):
+                st.write(f"📸 Fotos prontas para salvar: **{len(st.session_state['fotos_temp'])}**")
+                if st.button("🗑️ Limpar Todas as Fotos", key="btn_limpar_fotos"):
                     st.session_state["fotos_temp"] = []
                     st.rerun()
 
-            if st.button("💾 Finalizar Registro", key="btn_salvar_balanca"):
+            if st.button("💾 Finalizar Registro e Salvar", key="btn_salvar_balanca"):
                 if placa and motorista and p_l > 0:
-                    with st.spinner("Processando fotos..."):
+                    with st.spinner("Enviando dados e fotos..."):
                         lista_urls = []
                         for f in st.session_state["fotos_temp"]:
                             try: lista_urls.append(cloudinary.uploader.upload(f)["secure_url"])
@@ -161,17 +202,18 @@ if "🚛 Balança" in tab_map:
                             if tipo == "Entrada (Insumo)": atualizar_estoque_direto(material, p_l, "soma")
                             elif tipo == "Saída (Massa Asfáltica)": dar_baixa_estoque_cbuq(p_l)
                             elif tipo == "Saída (Diversos)": atualizar_estoque_direto(material, p_l, "subtrai")
-                            st.success("Salvo!"); st.session_state["fotos_temp"] = []
-                            st.download_button("📥 PDF", gerar_pdf_ticket(dados), f"ticket_{placa}.pdf", key="btn_pdf_balanca")
+                            st.success("✅ Registro concluído com sucesso!"); st.session_state["fotos_temp"] = []
+                            st.download_button("📥 Baixar Comprovante PDF", gerar_pdf_ticket(dados), f"ticket_{placa}.pdf", key="btn_pdf_balanca")
                         except Exception as e: st.error(f"Erro no banco: {e}")
+                else: st.warning("Por favor, preencha Placa, Motorista e Peso antes de finalizar.")
 
 # --- TAB: RELATÓRIOS ---
 if "📈 Relatórios" in tab_map:
     with tab_map["📈 Relatórios"]:
-        sub1, sub2 = st.tabs(["WhatsApp", "🔍 Histórico e Fotos"])
+        sub1, sub2 = st.tabs(["📲 Enviar WhatsApp", "🔍 Histórico e Fotos"])
         
         with sub1:
-            st.header("Relatório WhatsApp")
+            st.header("Relatório de Movimentação")
             inicio_hoje = datetime.now().strftime('%Y-%m-%dT00:00:00')
             texto = f"🏛️ *USINA VILHENA* - {datetime.now().strftime('%d/%m/%Y')}\n\n"
             try:
@@ -188,13 +230,13 @@ if "📈 Relatórios" in tab_map:
                     texto += "\n*📦 ESTOQUE ATUAL:*\n"
                     for r in res_e.data: texto += f"• {r['item']}: {r['quantidade_kg']:,.0f} kg\n"
             except: pass
-            st.markdown(f"[🟢 Enviar WhatsApp](https://wa.me/?text={urllib.parse.quote(texto)})")
+            st.markdown(f"[🟢 Enviar Relatório via WhatsApp](https://wa.me/?text={urllib.parse.quote(texto)})")
 
         with sub2:
             st.header("Consulta de Histórico")
             col_f1, col_f2 = st.columns(2)
             with col_f1: d_busca = st.date_input("Dia", date.today(), key="data_busca_rel")
-            with col_f2: p_busca = st.text_input("Filtrar Placa", key="placa_busca_rel").upper()
+            with col_f2: p_busca = st.text_input("Filtrar por Placa", key="placa_busca_rel").upper()
             
             res_h = supabase.table("balanca").select("*").gte("created_at", d_busca.isoformat()).lte("created_at", d_busca.isoformat() + "T23:59:59").execute()
             if res_h.data:
@@ -205,43 +247,41 @@ if "📈 Relatórios" in tab_map:
                     with st.expander(f"🚛 {row['placa']} - {row['material']} ({row['peso_liquido']}kg)"):
                         st.write(f"**Motorista:** {row['motorista']} | **Destino:** {row['destino']} | **Operador:** {row['operador']}")
                         
-                        # CORREÇÃO DEFINITIVA DO ERRO DE IMAGEM:
                         if row.get('foto_url') and str(row['foto_url']).strip() != "" and str(row['foto_url']) != "None":
                             links = str(row['foto_url']).split(",")
                             cols = st.columns(min(len(links), 4))
                             for idx, link in enumerate(links):
                                 clean_link = str(link).strip()
-                                # Só tenta carregar se for um link HTTP válido
                                 if clean_link.startswith("http"):
                                     try:
                                         cols[idx % 4].image(clean_link, use_container_width=True)
                                     except:
-                                        cols[idx % 4].warning("Erro ao carregar imagem.")
+                                        cols[idx % 4].warning("Imagem indisponível.")
                         else:
-                            st.info("Nenhuma foto disponível para este registro.")
+                            st.info("Nenhuma foto anexada a este registro.")
 
 # --- TAB: ALMOXARIFADO ---
 if "📦 Almoxarifado" in tab_map:
     with tab_map["📦 Almoxarifado"]:
-        m_alm = st.radio("Menu:", ["Estoque", "Movimentar", "Cadastrar"], horizontal=True, key="menu_alm_radio")
+        m_alm = st.radio("Menu:", ["Estoque", "Movimentar Material", "Cadastrar Novo Item"], horizontal=True, key="menu_alm_radio")
         res_alm = supabase.table("almoxarifado").select("*").execute()
         if m_alm == "Estoque" and res_alm.data:
             st.dataframe(pd.DataFrame(res_alm.data)[['item', 'categoria', 'quantidade', 'unidade']], use_container_width=True)
-        elif m_alm == "Movimentar":
+        elif m_alm == "Movimentar Material":
             itens = [r['item'] for r in res_alm.data] if res_alm.data else []
             if itens:
                 with st.form("f_alm_mov"):
-                    it, tm, qm = st.selectbox("Item", itens, key="sel_item_alm"), st.selectbox("Tipo", ["Entrada", "Saída"], key="sel_tipo_alm"), st.number_input("Qtd", 0.1, key="num_qtd_alm")
-                    if st.form_submit_button("OK"):
+                    it, tm, qm = st.selectbox("Material", itens, key="sel_item_alm"), st.selectbox("Ação", ["Entrada", "Saída"], key="sel_tipo_alm"), st.number_input("Quantidade", 0.1, key="num_qtd_alm")
+                    if st.form_submit_button("Confirmar Movimentação"):
                         cur = next(i['quantidade'] for i in res_alm.data if i['item'] == it)
                         supabase.table("almoxarifado").update({"quantidade": (cur+qm) if tm=="Entrada" else (cur-qm)}).eq("item", it).execute()
-                        st.success("Atualizado!"); st.rerun()
-        elif m_alm == "Cadastrar":
+                        st.success("Estoque atualizado!"); st.rerun()
+        elif m_alm == "Cadastrar Novo Item":
             with st.form("f_alm_cad"):
-                ni, nc, nu = st.text_input("Nome Item", key="ni_alm"), st.selectbox("Cat", ["Escritório", "Manutenção", "Limpeza"], key="nc_alm"), st.text_input("Unidade", key="nu_alm")
-                if st.form_submit_button("Salvar"):
+                ni, nc, nu = st.text_input("Nome do Item", key="ni_alm"), st.selectbox("Categoria", ["Escritório", "Manutenção", "Limpeza"], key="nc_alm"), st.text_input("Unidade de Medida", key="nu_alm")
+                if st.form_submit_button("Salvar Item"):
                     supabase.table("almoxarifado").insert({"item": ni, "categoria": nc, "unidade": nu, "quantidade": 0}).execute()
-                    st.success("Criado!"); st.rerun()
+                    st.success("Item cadastrado!"); st.rerun()
 
 # --- TAB: TRAÇO CBUQ ---
 if "🏗️ Traço CBUQ" in tab_map:
@@ -250,29 +290,36 @@ if "🏗️ Traço CBUQ" in tab_map:
         if res_t.data:
             with st.form("f_traco_config"):
                 n_p = {r['item']: st.number_input(f"% {r['item']}", 0.0, 100.0, float(r['porcentagem']), key=f"tr_{r['item']}") for r in res_t.data}
-                if st.form_submit_button("Salvar Traço"):
+                if st.form_submit_button("Salvar Novo Traço"):
                     for k, v in n_p.items(): supabase.table("config_traco").update({"porcentagem": v}).eq("item", k).execute()
-                    st.success("Traço Atualizado!"); st.rerun()
+                    st.success("Traço de CBUQ atualizado!"); st.rerun()
 
 # --- TAB: MANUTENÇÃO ---
 if "🛠️ Manutenção" in tab_map:
     with tab_map["🛠️ Manutenção"]:
+        st.subheader("Diário de Paradas e Manutenção")
         with st.form("f_manut_reg"):
-            mot = st.selectbox("Motivo", ["Preventiva", "Quebra", "Chuva"], key="mot_manut")
-            d1, h1 = st.date_input("Início", key="d1_manut"), st.time_input("Hora Início", key="h1_manut")
-            d2, h2 = st.date_input("Fim", key="d2_manut"), st.time_input("Hora Fim", key="h2_manut")
-            if st.form_submit_button("Registrar"):
+            mot = st.selectbox("Motivo da Parada", ["Preventiva", "Quebra", "Chuva", "Falta de Insumo"], key="mot_manut")
+            d1, h1 = st.date_input("Início da Parada", key="d1_manut"), st.time_input("Hora Início", key="h1_manut")
+            d2, h2 = st.date_input("Retorno da Produção", key="d2_manut"), st.time_input("Hora Fim", key="h2_manut")
+            if st.form_submit_button("Registrar Evento"):
                 t = (datetime.combine(d2, h2) - datetime.combine(d1, h1)).total_seconds() / 3600
-                supabase.table("manutencao_paradas").insert({"motivo": mot, "tempo": round(t, 2), "data_inicio": datetime.combine(d1, h1).isoformat(), "data_fim": datetime.combine(d2, h2).isoformat()}).execute()
-                st.success(f"Registrado {t:.2f}h"); st.rerun()
+                if t > 0:
+                    supabase.table("manutencao_paradas").insert({"motivo": mot, "tempo": round(t, 2), "data_inicio": datetime.combine(d1, h1).isoformat(), "data_fim": datetime.combine(d2, h2).isoformat()}).execute()
+                    st.success(f"Registrado com sucesso: {t:.2f}h de parada."); st.rerun()
+                else:
+                    st.error("A data/hora de retorno deve ser posterior à de início.")
 
 # --- TAB: USUÁRIOS ---
 if "👥 Usuários" in tab_map:
     with tab_map["👥 Usuários"]:
+        st.header("Gestão de Operadores e Acesso")
         res_u = supabase.table("usuarios").select("usuario, nome, perfil").execute()
         if res_u.data: st.table(pd.DataFrame(res_u.data))
         with st.form("f_u_cad"):
-            nu, nn, np, ns = st.text_input("Login", key="u_login"), st.text_input("Nome", key="u_nome"), st.selectbox("Perfil", ["Operador Balança", "Gestor Almoxarifado/Manutenção", "Administrador"], key="u_perfil"), st.text_input("Senha", type="password", key="u_senha")
-            if st.form_submit_button("Criar"):
-                supabase.table("usuarios").insert({"usuario": nu.lower(), "senha_hash": gerar_hash_senha(ns), "nome": nn, "perfil": np}).execute()
-                st.success("Usuário Criado!"); st.rerun()
+            nu, nn, np, ns = st.text_input("Login (Usuário)", key="u_login"), st.text_input("Nome Completo", key="u_nome"), st.selectbox("Perfil de Acesso", ["Operador Balança", "Gestor Almoxarifado/Manutenção", "Administrador"], key="u_perfil"), st.text_input("Senha de Acesso", type="password", key="u_senha")
+            if st.form_submit_button("Criar Conta"):
+                if nu and ns:
+                    supabase.table("usuarios").insert({"usuario": nu.lower(), "senha_hash": gerar_hash_senha(ns), "nome": nn, "perfil": np}).execute()
+                    st.success(f"Usuário {nu} criado com sucesso!"); st.rerun()
+                else: st.warning("Preencha todos os campos obrigatórios.")
