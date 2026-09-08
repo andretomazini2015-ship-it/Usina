@@ -136,102 +136,101 @@ if "🚛 Balança" in tab_map:
             if foto_capturada:
                 if foto_capturada not in st.session_state["fotos_temp"]:
                     st.session_state["fotos_temp"].append(foto_capturada)
-                    st.success(f"Foto {len(st.session_state['fotos_temp'])} adicionada!")
+                    st.toast(f"Foto {len(st.session_state['fotos_temp'])} adicionada!")
+            
             if st.session_state["fotos_temp"]:
-                st.write(f"Total de fotos prontas: {len(st.session_state['fotos_temp'])}")
-                if st.button("🗑️ Limpar Fotos"):
+                st.write(f"Fotos prontas: {len(st.session_state['fotos_temp'])}")
+                if st.button("Limpar Fotos"):
                     st.session_state["fotos_temp"] = []
                     st.rerun()
+
             if st.button("💾 Finalizar Registro"):
                 if placa and motorista and p_l > 0:
-                    with st.spinner("Enviando fotos..."):
+                    with st.spinner("Processando fotos e salvando..."):
                         lista_urls = []
                         for f in st.session_state["fotos_temp"]:
                             try: lista_urls.append(cloudinary.uploader.upload(f)["secure_url"])
                             except: pass
-                        dados = {"placa": placa, "motorista": motorista, "tipo_movimento": tipo, "material": material, "peso_liquido": p_l, "destino": destino, "operador": st.session_state['usuario'], "foto_url": ",".join(lista_urls)}
+                        
+                        foto_url_final = ",".join(lista_urls) if lista_urls else None
+                        
+                        dados = {"placa": placa, "motorista": motorista, "tipo_movimento": tipo, "material": material, "peso_liquido": p_l, "destino": destino, "operador": st.session_state['usuario'], "foto_url": foto_url_final}
                         try:
                             supabase.table("balanca").insert(dados).execute()
                             if tipo == "Entrada (Insumo)": atualizar_estoque_direto(material, p_l, "soma")
                             elif tipo == "Saída (Massa Asfáltica)": dar_baixa_estoque_cbuq(p_l)
                             elif tipo == "Saída (Diversos)": atualizar_estoque_direto(material, p_l, "subtrai")
-                            st.success("✅ Salvo!"); st.session_state["fotos_temp"] = []
+                            st.success("Salvo!"); st.session_state["fotos_temp"] = []
                             st.download_button("📥 PDF", gerar_pdf_ticket(dados), f"ticket_{placa}.pdf")
-                        except Exception as e: st.error(f"Erro: {e}")
+                        except Exception as e: st.error(f"Erro no banco: {e}")
 
-# --- TAB: RELATÓRIOS (NOVA SUBSEÇÃO DE FOTOS) ---
+# --- TAB: RELATÓRIOS (CORRIGIDO) ---
 if "📈 Relatórios" in tab_map:
     with tab_map["📈 Relatórios"]:
-        sub_tab1, sub_tab2 = st.tabs(["WhatsApp", "🔍 Consulta de Pesagens/Fotos"])
+        sub1, sub2 = st.tabs(["WhatsApp", "🔍 Histórico e Fotos"])
         
-        with sub_tab1:
+        with sub1:
             st.header("Relatório WhatsApp")
             inicio_hoje = datetime.now().strftime('%Y-%m-%dT00:00:00')
             texto = f"🏛️ *USINA VILHENA* - {datetime.now().strftime('%d/%m/%Y')}\n\n"
-            res_m = supabase.table("balanca").select("*").gte("created_at", inicio_hoje).execute()
-            if res_m.data:
-                df_m = pd.DataFrame(res_m.data)
-                texto += "*🚀 MOVIMENTAÇÃO HOJE:*\n"
-                agrupado = df_m.groupby(['tipo_movimento', 'material'])['peso_liquido'].sum().reset_index()
-                for _, r in agrupado.iterrows():
-                    texto += f"{'⬅️' if 'Entrada' in r['tipo_movimento'] else '➡️'} {r['material']}: {r['peso_liquido']:,.0f} kg\n"
-            link = f"https://wa.me/?text={urllib.parse.quote(texto)}"
-            st.markdown(f"[🟢 Enviar WhatsApp]({link})")
+            try:
+                res_m = supabase.table("balanca").select("*").gte("created_at", inicio_hoje).execute()
+                if res_m.data:
+                    df_m = pd.DataFrame(res_m.data)
+                    texto += "*🚀 MOVIMENTAÇÃO HOJE:*\n"
+                    agrupado = df_m.groupby(['tipo_movimento', 'material'])['peso_liquido'].sum().reset_index()
+                    for _, r in agrupado.iterrows():
+                        texto += f"{'⬅️' if 'Entrada' in r['tipo_movimento'] else '➡️'} {r['material']}: {r['peso_liquido']:,.0f} kg\n"
+            except: pass
+            st.markdown(f"[🟢 Enviar WhatsApp](https://wa.me/?text={urllib.parse.quote(texto)})")
 
-        with sub_tab2:
-            st.header("Consulta de Histórico")
+        with sub2:
+            st.header("Consulta de Pesagens")
             col_f1, col_f2 = st.columns(2)
-            with col_f1:
-                data_busca = st.date_input("Selecione o Dia", date.today())
-            with col_f2:
-                placa_busca = st.text_input("Filtrar por Placa (Opcional)").upper()
+            with col_f1: d_busca = st.date_input("Dia", date.today())
+            with col_f2: p_busca = st.text_input("Placa").upper()
             
-            query = supabase.table("balanca").select("*").gte("created_at", data_busca.isoformat()).lte("created_at", data_busca.isoformat() + "T23:59:59")
-            if placa_busca:
-                query = query.eq("placa", placa_busca)
-            
-            res_h = query.execute()
+            res_h = supabase.table("balanca").select("*").gte("created_at", d_busca.isoformat()).lte("created_at", d_busca.isoformat() + "T23:59:59").execute()
             if res_h.data:
                 df_h = pd.DataFrame(res_h.data)
-                st.write(f"Encontrados {len(df_h)} registros:")
+                if p_busca: df_h = df_h[df_h['placa'].str.contains(p_busca)]
                 
                 for _, row in df_h.iterrows():
-                    with st.expander(f"🚛 {row['placa']} - {row['material']} - {row['peso_liquido']}kg"):
-                        c_det1, c_det2 = st.columns(2)
-                        with c_det1:
-                            st.write(f"**Motorista:** {row['motorista']}")
-                            st.write(f"**Operação:** {row['tipo_movimento']}")
-                            st.write(f"**Destino:** {row['destino']}")
-                            st.write(f"**Operador:** {row['operador']}")
-                        with c_det2:
-                            st.write("**Fotos do Carregamento:**")
-                            if row['foto_url']:
-                                links = row['foto_url'].split(",")
-                                cols_fotos = st.columns(len(links))
-                                for idx, link in enumerate(links):
-                                    cols_fotos[idx].image(link, use_container_width=True)
-                            else:
-                                st.info("Nenhuma foto registrada para este veículo.")
-            else:
-                st.warning("Nenhum registro encontrado para este filtro.")
+                    with st.expander(f"🚛 {row['placa']} - {row['material']} ({row['peso_liquido']}kg)"):
+                        st.write(f"**Motorista:** {row['motorista']} | **Destino:** {row['destino']} | **Operador:** {row['operador']}")
+                        # CORREÇÃO DO ERRO AQUI: Verifica se existe texto no campo foto_url
+                        if row.get('foto_url'):
+                            links = str(row['foto_url']).split(",")
+                            cols = st.columns(min(len(links), 4))
+                            for idx, link in enumerate(links):
+                                if link: cols[idx % 4].image(link, use_container_width=True)
+                        else:
+                            st.info("Sem fotos registradas.")
 
 # --- TAB: ALMOXARIFADO ---
 if "📦 Almoxarifado" in tab_map:
     with tab_map["📦 Almoxarifado"]:
-        menu_alm = st.radio("Ação:", ["Estoque", "Movimentar", "Cadastrar"], horizontal=True)
-        res_alm = supabase.table("almoxarifado").select("*").execute()
-        if menu_alm == "Estoque" and res_alm.data:
-            st.dataframe(pd.DataFrame(res_alm.data)[['item', 'categoria', 'quantidade', 'unidade']], use_container_width=True)
-        elif menu_alm == "Movimentar":
-            itens = [r['item'] for r in res_alm.data]
+        m_alm = st.radio("Menu:", ["Estoque", "Movimentar", "Cadastrar"], horizontal=True)
+        if m_alm == "Estoque":
+            res = supabase.table("almoxarifado").select("*").execute()
+            if res.data: st.dataframe(pd.DataFrame(res.data)[['item', 'categoria', 'quantidade', 'unidade']])
+        elif m_alm == "Movimentar":
+            itens = [r['item'] for r in supabase.table("almoxarifado").select("item").execute().data]
             with st.form("f_alm"):
                 it, tm, qm = st.selectbox("Item", itens), st.selectbox("Tipo", ["Entrada", "Saída"]), st.number_input("Qtd", 0.1)
-                if st.form_submit_button("Confirmar"):
-                    cur = next(i['quantidade'] for i in res_alm.data if i['item'] == it)
-                    supabase.table("almoxarifado").update({"quantidade": (cur+qm) if tm=="Entrada" else (cur-qm)}).eq("item", it).execute()
-                    st.success("Atualizado!"); st.rerun()
+                if st.form_submit_button("OK"):
+                    cur = supabase.table("almoxarifado").select("quantidade").eq("item", it).execute().data[0]['quantidade']
+                    nova = (cur+qm) if tm=="Entrada" else (cur-qm)
+                    supabase.table("almoxarifado").update({"quantidade": nova}).eq("item", it).execute()
+                    st.rerun()
+        elif m_alm == "Cadastrar":
+            with st.form("f_c"):
+                ni, nc, nu = st.text_input("Item"), st.selectbox("Cat", ["Escritório", "Manutenção", "Limpeza"]), st.text_input("Unidade")
+                if st.form_submit_button("Salvar"):
+                    supabase.table("almoxarifado").insert({"item": ni, "categoria": nc, "unidade": nu, "quantidade": 0}).execute()
+                    st.rerun()
 
-# --- TAB: TRAÇO / MANUTENÇÃO / USUÁRIOS (Sincronizados) ---
+# --- TAB: TRAÇO / MANUTENÇÃO / USUÁRIOS ---
 if "🏗️ Traço CBUQ" in tab_map:
     with tab_map["🏗️ Traço CBUQ"]:
         res_t = supabase.table("config_traco").select("*").execute()
@@ -250,7 +249,7 @@ if "🛠️ Manutenção" in tab_map:
             if st.form_submit_button("Registrar"):
                 t = (datetime.combine(d2, h2) - datetime.combine(d1, h1)).total_seconds() / 3600
                 supabase.table("manutencao_paradas").insert({"motivo": mot, "tempo": round(t, 2), "data_inicio": datetime.combine(d1, h1).isoformat(), "data_fim": datetime.combine(d2, h2).isoformat()}).execute()
-                st.success(f"Registrado {t:.2f}h")
+                st.success("OK")
 
 if "👥 Usuários" in tab_map:
     with tab_map["👥 Usuários"]:
