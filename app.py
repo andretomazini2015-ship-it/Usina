@@ -204,12 +204,21 @@ if "📈 Relatórios" in tab_map:
                 for _, row in df_h.iterrows():
                     with st.expander(f"🚛 {row['placa']} - {row['material']} ({row['peso_liquido']}kg)"):
                         st.write(f"**Motorista:** {row['motorista']} | **Destino:** {row['destino']} | **Operador:** {row['operador']}")
-                        if row.get('foto_url'):
+                        
+                        # CORREÇÃO DEFINITIVA DO ERRO DE IMAGEM:
+                        if row.get('foto_url') and str(row['foto_url']).strip() != "" and str(row['foto_url']) != "None":
                             links = str(row['foto_url']).split(",")
                             cols = st.columns(min(len(links), 4))
                             for idx, link in enumerate(links):
-                                if link: cols[idx % 4].image(link, use_container_width=True)
-                        else: st.info("Sem fotos.")
+                                clean_link = str(link).strip()
+                                # Só tenta carregar se for um link HTTP válido
+                                if clean_link.startswith("http"):
+                                    try:
+                                        cols[idx % 4].image(clean_link, use_container_width=True)
+                                    except:
+                                        cols[idx % 4].warning("Erro ao carregar imagem.")
+                        else:
+                            st.info("Nenhuma foto disponível para este registro.")
 
 # --- TAB: ALMOXARIFADO ---
 if "📦 Almoxarifado" in tab_map:
@@ -219,13 +228,14 @@ if "📦 Almoxarifado" in tab_map:
         if m_alm == "Estoque" and res_alm.data:
             st.dataframe(pd.DataFrame(res_alm.data)[['item', 'categoria', 'quantidade', 'unidade']], use_container_width=True)
         elif m_alm == "Movimentar":
-            itens = [r['item'] for r in res_alm.data]
-            with st.form("f_alm_mov"):
-                it, tm, qm = st.selectbox("Item", itens, key="sel_item_alm"), st.selectbox("Tipo", ["Entrada", "Saída"], key="sel_tipo_alm"), st.number_input("Qtd", 0.1, key="num_qtd_alm")
-                if st.form_submit_button("OK"):
-                    cur = next(i['quantidade'] for i in res_alm.data if i['item'] == it)
-                    supabase.table("almoxarifado").update({"quantidade": (cur+qm) if tm=="Entrada" else (cur-qm)}).eq("item", it).execute()
-                    st.success("Atualizado!"); st.rerun()
+            itens = [r['item'] for r in res_alm.data] if res_alm.data else []
+            if itens:
+                with st.form("f_alm_mov"):
+                    it, tm, qm = st.selectbox("Item", itens, key="sel_item_alm"), st.selectbox("Tipo", ["Entrada", "Saída"], key="sel_tipo_alm"), st.number_input("Qtd", 0.1, key="num_qtd_alm")
+                    if st.form_submit_button("OK"):
+                        cur = next(i['quantidade'] for i in res_alm.data if i['item'] == it)
+                        supabase.table("almoxarifado").update({"quantidade": (cur+qm) if tm=="Entrada" else (cur-qm)}).eq("item", it).execute()
+                        st.success("Atualizado!"); st.rerun()
         elif m_alm == "Cadastrar":
             with st.form("f_alm_cad"):
                 ni, nc, nu = st.text_input("Nome Item", key="ni_alm"), st.selectbox("Cat", ["Escritório", "Manutenção", "Limpeza"], key="nc_alm"), st.text_input("Unidade", key="nu_alm")
@@ -237,11 +247,12 @@ if "📦 Almoxarifado" in tab_map:
 if "🏗️ Traço CBUQ" in tab_map:
     with tab_map["🏗️ Traço CBUQ"]:
         res_t = supabase.table("config_traco").select("*").execute()
-        with st.form("f_traco_config"):
-            n_p = {r['item']: st.number_input(f"% {r['item']}", 0.0, 100.0, float(r['porcentagem']), key=f"tr_{r['item']}") for r in res_t.data}
-            if st.form_submit_button("Salvar Traço"):
-                for k, v in n_p.items(): supabase.table("config_traco").update({"porcentagem": v}).eq("item", k).execute()
-                st.success("Traço Atualizado!"); st.rerun()
+        if res_t.data:
+            with st.form("f_traco_config"):
+                n_p = {r['item']: st.number_input(f"% {r['item']}", 0.0, 100.0, float(r['porcentagem']), key=f"tr_{r['item']}") for r in res_t.data}
+                if st.form_submit_button("Salvar Traço"):
+                    for k, v in n_p.items(): supabase.table("config_traco").update({"porcentagem": v}).eq("item", k).execute()
+                    st.success("Traço Atualizado!"); st.rerun()
 
 # --- TAB: MANUTENÇÃO ---
 if "🛠️ Manutenção" in tab_map:
@@ -259,7 +270,7 @@ if "🛠️ Manutenção" in tab_map:
 if "👥 Usuários" in tab_map:
     with tab_map["👥 Usuários"]:
         res_u = supabase.table("usuarios").select("usuario, nome, perfil").execute()
-        st.table(pd.DataFrame(res_u.data))
+        if res_u.data: st.table(pd.DataFrame(res_u.data))
         with st.form("f_u_cad"):
             nu, nn, np, ns = st.text_input("Login", key="u_login"), st.text_input("Nome", key="u_nome"), st.selectbox("Perfil", ["Operador Balança", "Gestor Almoxarifado/Manutenção", "Administrador"], key="u_perfil"), st.text_input("Senha", type="password", key="u_senha")
             if st.form_submit_button("Criar"):
